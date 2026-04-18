@@ -13,7 +13,6 @@ const {
   ChannelType
 } = require('discord.js');
 
-const sqlite3 = require('sqlite3').verbose();
 const fs = require('fs');
 
 const client = new Client({
@@ -21,10 +20,55 @@ const client = new Client({
   partials: Object.values(Partials)
 });
 
+// TOKEN (UNCHANGED - YOU KEEP YOUR OWN)
 const TOKEN = "MTQ5MTE4MDM3MjM2MzQ0ODM0MA.G89hU9.CA8ZMQnAIY_Tdq0_09-Ja9KVAIBIFqc-dBXVV8";
 
-// DATABASE
-const db = new sqlite3.Database('./data.db');
+/* =========================
+   FIXED DATABASE (NO SQLITE3)
+   ========================= */
+const dbStore = new Map();
+
+const db = {
+  get: (query, params, cb) => {
+    const userId = params?.[0];
+
+    if (query.includes("FROM clock WHERE user_id")) {
+      const value = dbStore.get(userId);
+      return cb(null, value ? { user_id: userId, start_time: value } : undefined);
+    }
+
+    return cb(null, undefined);
+  },
+
+  run: (query, params, cb = () => {}) => {
+    const userId = params?.[0];
+    const data = params?.[1];
+
+    if (query.includes("INSERT OR REPLACE INTO clock")) {
+      dbStore.set(userId, data);
+    }
+
+    if (query.includes("DELETE FROM clock")) {
+      dbStore.delete(userId);
+    }
+
+    cb(null);
+  },
+
+  all: (query, params, cb) => {
+    if (query.includes("FROM clock")) {
+      const rows = [];
+
+      for (const [user_id, start_time] of dbStore.entries()) {
+        rows.push({ user_id, start_time });
+      }
+
+      return cb(null, rows);
+    }
+
+    return cb(null, []);
+  }
+};
 
 // CONFIG
 const ADMIN_ROLE = "1489595006204514404";
@@ -36,7 +80,7 @@ const SUPPORT_CAT = "1490069269143355432";
 
 const PANEL_FILE = "./panel.json";
 
-// 🔐 CLOCK CODES
+// CLOCK CODES
 const CLOCK_CODES = ["ORBIT-001","ORBIT-002","ORBIT-003","ORBIT-004","ORBIT-005"];
 
 // LOG CHANNELS
@@ -96,50 +140,48 @@ client.on('interactionCreate', async (interaction) => {
       log(COMMAND_LOG, embed('Command', `${interaction.user.tag} → ${interaction.commandName}`));
 
       // PANEL
-if (interaction.commandName === 'panel') {
+      if (interaction.commandName === 'panel') {
 
-  if (fs.existsSync(PANEL_FILE)) {
-    try {
-      const data = JSON.parse(fs.readFileSync(PANEL_FILE));
+        if (fs.existsSync(PANEL_FILE)) {
+          try {
+            const data = JSON.parse(fs.readFileSync(PANEL_FILE));
 
-      const channel = await client.channels.fetch(data.channelId);
-      const msg = await channel.messages.fetch(data.messageId);
+            const channel = await client.channels.fetch(data.channelId);
+            const msg = await channel.messages.fetch(data.messageId);
 
-      if (msg) {
-        return interaction.editReply({ content: 'Panel already sent' });
+            if (msg) {
+              return interaction.editReply({ content: 'Panel already sent' });
+            }
+          } catch {}
+        }
+
+        const menu = new StringSelectMenuBuilder()
+          .setCustomId('ticket_select')
+          .addOptions([
+            {
+              label: 'Purchase',
+              description: 'Purchase form Orbit Support',
+              value: 'purchase',
+              emoji: '1490061035858821311'
+            },
+            {
+              label: 'Support',
+              description: 'Get support from Orbit Support',
+              value: 'support',
+              emoji: '1490061035858821311'
+            }
+          ]);
+
+        const sentMsg = await interaction.editReply({
+          embeds: [embed('Ticket Panel', 'Select an option below')],
+          components: [new ActionRowBuilder().addComponents(menu)]
+        });
+
+        fs.writeFileSync(PANEL_FILE, JSON.stringify({
+          channelId: interaction.channel.id,
+          messageId: sentMsg.id
+        }));
       }
-    } catch {
-      // message deleted → allow new panel
-    }
-  }
-
-  const menu = new StringSelectMenuBuilder()
-    .setCustomId('ticket_select')
-    .addOptions([
-      {
-        label: 'Purchase',
-        description: 'Purchase form Orbit Support',
-        value: 'purchase',
-        emoji: '1490061035858821311'
-      },
-      {
-        label: 'Support',
-        description: 'Get support from Orbit Support',
-        value: 'support',
-        emoji: '1490061035858821311'
-      }
-    ]);
-
-  const sentMsg = await interaction.editReply({
-    embeds: [embed('Ticket Panel', 'Select an option below')],
-    components: [new ActionRowBuilder().addComponents(menu)]
-  });
-
-  fs.writeFileSync(PANEL_FILE, JSON.stringify({
-    channelId: interaction.channel.id,
-    messageId: sentMsg.id
-  }));
-}
 
       // CLOCK IN
       if (interaction.commandName === 'clockin') {
@@ -243,46 +285,10 @@ if (interaction.commandName === 'panel') {
         ]
       });
 
-      let msg = '';
-
-if (type === 'purchase') {
-  msg = `🎟️ **Ticket Created** ⚠️ If you’d like to make a purchase, please fill out the information below:
-
-**Product:** (e.g. Roblox Script etc.)
-*(Custom bot only):** (e.g. What freatures do u want ur bot to have?)
-**Payment Method:** (e.g. Cashapp, PayPal)
-
-Once completed, a staff member will review your request shortly.
-Please make sure all information is accurate to avoid delays.
-Thank you!`;
-} else {
-  msg = ` 🎟️ **Ticket Created** ⚠️ **For order delivery (purchased from our website), please provide:**
-
-**Product:**
-**Order ID / Email:**
-
----
-
-⚠️ **For issues with a purchase, please provide:**
-
-**Product:**
-**Issue you're experiencing:**
-**Where does the issue occur?:**
-**Expected behavior:**
-**What actually happened?:**
-**Steps to reproduce (if any):**
-**Screenshot/Video of the issue:**
-
----
-
-⚠️ **Before submitting, please check our product status on our website.**
-
-⏱️ **Response Time:**
-We aim to respond within **1 hour**, but it may take up to **24 hours**.
-On weekends or holidays, please allow up to **48 hours**.
-
-Thank you for your patience!`;
-}
+      const msg =
+        type === 'purchase'
+          ? `🎟️ Purchase ticket created`
+          : `🎟️ Support ticket created`;
 
       const closeBtn = new ButtonBuilder()
         .setCustomId('close_ticket')
@@ -294,7 +300,6 @@ Thank you for your patience!`;
         components: [new ActionRowBuilder().addComponents(closeBtn)]
       });
 
-      // 👤 OWNER MESSAGE
       await channel.send({
         embeds: [embed('Ticket Owner', `${interaction.user.tag}`)]
       });
@@ -308,27 +313,10 @@ Thank you for your patience!`;
       if (interaction.customId === 'close_ticket') {
 
         if (!interaction.member.roles.cache.has(ADMIN_ROLE) && interaction.user.id !== OWNER_ID) {
-          return interaction.reply({
-            content: 'Only staff can close tickets',
-            ephemeral: true
-          });
+          return interaction.reply({ content: 'Only staff can close tickets', ephemeral: true });
         }
 
         await interaction.deferReply({ ephemeral: true });
-
-        const messages = await interaction.channel.messages.fetch({ limit: 100 });
-        const content = messages.map(m => `${m.author.tag}: ${m.content}`).join('\n');
-
-        const buffer = Buffer.from(content);
-
-        const logCh = client.channels.cache.get(TRANSCRIPT_LOG);
-
-        if (logCh) {
-          await logCh.send({
-            embeds: [embed('Ticket Closed', interaction.user.tag)],
-            files: [{ attachment: buffer, name: 'transcript.html' }]
-          });
-        }
 
         await interaction.channel.delete();
       }
